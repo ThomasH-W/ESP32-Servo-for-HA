@@ -10,6 +10,7 @@
 user_config_secret.h
 
 # Logfiles
+logs/
 *.log   
 
 # Build and cache

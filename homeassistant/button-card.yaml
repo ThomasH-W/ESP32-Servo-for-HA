@@ -1,0 +1,26 @@
+type: custom:button-card
+entity: number.esp32_servo_steuerung_servo_position
+name: Servo Control
+show_state: true
+styles:
+  card:
+    - width: 150px
+    - height: 150px
+state:
+  - value: 90
+    name: Closed
+    icon: mdi:valve-closed
+    color: red
+  - value: 180
+    name: Open
+    icon: mdi:valve-open
+    color: green
+tap_action:
+  action: call-service
+  service: number.set_value
+  service_data:
+    entity_id: number.esp32_servo_steuerung_servo_position
+    value: |
+      [[[ 
+        return (entity.state == 90) ? 180 : 90; 
+      ]]]
