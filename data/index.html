@@ -1,45 +1,558 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ESP Radio</title>
-    <link rel="stylesheet" href="style.css" />
-    <link
-      href="https://fonts.googleapis.com/icon?family=Material+Icons"
-      rel="stylesheet"
-    />
-    <script src="main.js" type="module"></script>
-  </head>
-  <body>
-    <header>
-      <section class="content">
-        <h1>ESP Radio</h1>
-        <a class="material-icons" href="radio.html">settings</a>
-      </section>
-    </header>
-    <main>
-      <section class="content">
-        <section class="card" id="song_meta">
-          <img id="meta_cover" crossorigin="" src="" alt="" />
-          <p id="meta_artist"></p>
-          <p id="meta_title"></p>
-        </section>
-        <section class="card" id="station">
-          <select id="station_select">
-            <option>Loading Stations...</option>
-          </select>
-          <button class="material-icons" id="back">skip_previous</button>
-          <button class="material-icons" id="next">skip_next</button>
-        </section>
-        <section class="card" id="media_control">
-          <button class="material-icons" id="pause_play">pause</button>
-          <button class="material-icons" id="volume_down">volume_down</button>
-          <button class="material-icons" id="volume_up">volume_up</button>
-          <input type="range" min="0" max="30" id="volume_range" />
-        </section>
-      </section>
-    </main>
-  </body>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Servo Control</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600;700&display=swap');
+
+  :root {
+    --bg:        #0a0e17;
+    --panel:     #0f1623;
+    --border:    #1e2d45;
+    --accent:    #00d4ff;
+    --accent2:   #ff6b35;
+    --green:     #39ff82;
+    --red:       #ff3b5c;
+    --text:      #c8d8e8;
+    --muted:     #4a6080;
+    --mono:      'Share Tech Mono', monospace;
+    --sans:      'Exo 2', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(0,212,255,0.08) 0%, transparent 60%),
+      linear-gradient(180deg, #0a0e17 0%, #06090f 100%);
+  }
+
+  /* ── header ── */
+  header {
+    width: 100%;
+    max-width: 700px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 32px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .logo-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, var(--accent), #0066aa);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .logo-text { font-family: var(--mono); font-size: 1.1rem; color: var(--accent); letter-spacing: 2px; }
+  .logo-sub  { font-size: 0.65rem; color: var(--muted); letter-spacing: 1px; }
+
+  .status-pills { display: flex; gap: 8px; }
+  .pill {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 0.65rem;
+    background: rgba(0,0,0,0.3);
+    transition: all 0.4s;
+  }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); transition: all 0.4s; }
+  .pill.ok   .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .pill.ok   { border-color: rgba(57,255,130,0.25); color: var(--green); }
+  .pill.err  .dot { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .pill.err  { border-color: rgba(255,59,92,0.25); color: var(--red); }
+
+  /* ── main grid ── */
+  .main { width: 100%; max-width: 700px; display: flex; flex-direction: column; gap: 20px; }
+
+  /* ── card ── */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.4;
+  }
+  .card-title {
+    font-family: var(--mono); font-size: 0.7rem; letter-spacing: 3px;
+    color: var(--accent); text-transform: uppercase; margin-bottom: 20px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .card-title::before { content: '//'; opacity: 0.5; }
+
+  /* ── servo dial ── */
+  .servo-section { display: flex; flex-direction: column; align-items: center; gap: 20px; }
+
+  .dial-wrapper { position: relative; width: 200px; height: 200px; }
+  .dial-svg { width: 100%; height: 100%; }
+
+  .angle-display {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center;
+  }
+  .angle-num {
+    font-family: var(--mono); font-size: 2.6rem;
+    color: var(--accent); line-height: 1;
+    text-shadow: 0 0 20px rgba(0,212,255,0.5);
+  }
+  .angle-unit { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+
+  /* range slider */
+  .slider-row { width: 100%; display: flex; align-items: center; gap: 12px; }
+  .slider-label { font-family: var(--mono); font-size: 0.65rem; color: var(--muted); width: 26px; text-align: center; }
+
+  input[type=range] {
+    flex: 1;
+    -webkit-appearance: none;
+    height: 4px;
+    background: linear-gradient(90deg, var(--accent) var(--pct, 50%), var(--border) var(--pct, 50%));
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px rgba(0,212,255,0.6), 0 0 0 3px rgba(0,212,255,0.15);
+    cursor: grab;
+    transition: box-shadow 0.2s;
+  }
+  input[type=range]:active::-webkit-slider-thumb { cursor: grabbing; }
+
+  /* preset buttons */
+  .presets { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .btn {
+    padding: 8px 18px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text);
+    font-family: var(--mono); font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(0,212,255,0.05); }
+  .btn.primary {
+    background: linear-gradient(135deg, rgba(0,212,255,0.15), rgba(0,100,170,0.15));
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .btn.primary:hover { background: linear-gradient(135deg, rgba(0,212,255,0.25), rgba(0,100,170,0.25)); }
+  .btn.danger { border-color: var(--red); color: var(--red); }
+  .btn.danger:hover { background: rgba(255,59,92,0.08); }
+
+  /* ── topic info ── */
+  .topic-grid { display: flex; flex-direction: column; gap: 10px; }
+  .topic-row { display: flex; gap: 12px; align-items: center; }
+  .topic-badge {
+    font-family: var(--mono); font-size: 0.6rem; padding: 3px 8px;
+    border-radius: 4px; letter-spacing: 1px; min-width: 52px; text-align: center;
+  }
+  .badge-sub { background: rgba(255,107,53,0.15); border: 1px solid rgba(255,107,53,0.4); color: var(--accent2); }
+  .badge-pub { background: rgba(0,212,255,0.1);   border: 1px solid rgba(0,212,255,0.3);  color: var(--accent); }
+  .topic-val { font-family: var(--mono); font-size: 0.8rem; color: var(--text); word-break: break-all; }
+
+  /* ── config form ── */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 500px) { .form-grid { grid-template-columns: 1fr; } }
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-group.full { grid-column: 1 / -1; }
+  label { font-family: var(--mono); font-size: 0.65rem; color: var(--muted); letter-spacing: 1px; }
+
+  input[type=text], input[type=password], input[type=number] {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 9px 12px;
+    color: var(--text);
+    font-family: var(--mono); font-size: 0.85rem;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(0,212,255,0.1);
+  }
+  input::placeholder { color: var(--muted); }
+
+  .device-name-highlight { border-color: rgba(0,212,255,0.5) !important; }
+
+  .form-actions { margin-top: 6px; display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* ── toast ── */
+  #toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(100px);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 22px;
+    font-family: var(--mono); font-size: 0.8rem;
+    transition: transform 0.3s ease;
+    z-index: 100;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast.success { border-color: rgba(57,255,130,0.4); color: var(--green); }
+  #toast.error   { border-color: rgba(255,59,92,0.4);  color: var(--red); }
+
+  /* tab switcher */
+  .tabs { display: flex; gap: 0; margin-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 8px 18px;
+    font-family: var(--mono); font-size: 0.7rem; letter-spacing: 2px;
+    color: var(--muted); cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: all 0.2s; text-transform: uppercase;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">⚙</div>
+    <div>
+      <div class="logo-text">Blast Gate Servo</div>
+      <div class="logo-sub">MQTT · ESP32</div>
+    </div>
+  </div>
+  <div class="status-pills">
+    <div class="pill" id="pill-wifi"><span class="dot"></span>WIFI</div>
+    <div class="pill" id="pill-mqtt"><span class="dot"></span>MQTT</div>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- ── SERVO CARD ── -->
+  <div class="card">
+    <div class="card-title">Servo Control</div>
+    <div class="servo-section">
+
+      <!-- Dial -->
+      <div class="dial-wrapper">
+        <svg class="dial-svg" viewBox="0 0 200 200" id="dialSvg">
+          <!-- Track -->
+          <circle cx="100" cy="100" r="80" fill="none" stroke="#1e2d45" stroke-width="8"
+            stroke-dasharray="251.3" stroke-dashoffset="62.8"
+            stroke-linecap="round"
+            transform="rotate(135 100 100)"/>
+          <!-- Progress arc -->
+          <circle cx="100" cy="100" r="80" fill="none" stroke="url(#arcGrad)" stroke-width="8"
+            stroke-dasharray="251.3" stroke-dashoffset="251.3"
+            stroke-linecap="round"
+            transform="rotate(135 100 100)"
+            id="dialArc"/>
+          <!-- Tick marks -->
+          <g id="ticks" stroke="#1e2d45" stroke-width="1.5"></g>
+          <!-- Needle -->
+          <line id="needle" x1="100" y1="100" x2="100" y2="28"
+            stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"
+            transform="rotate(0 100 100)"/>
+          <circle cx="100" cy="100" r="5" fill="var(--accent)"/>
+          <circle cx="100" cy="100" r="2" fill="var(--bg)"/>
+          <defs>
+            <linearGradient id="arcGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%"   stop-color="#00d4ff"/>
+              <stop offset="100%" stop-color="#39ff82"/>
+            </linearGradient>
+          </defs>
+        </svg>
+        <div class="angle-display">
+          <div class="angle-num" id="angleNum">90</div>
+          <div class="angle-unit">DEG</div>
+        </div>
+      </div>
+
+      <!-- Slider -->
+      <div class="slider-row" style="width:100%;max-width:380px;">
+        <span class="slider-label">0°</span>
+        <input type="range" id="servoSlider" min="0" max="180" value="90">
+        <span class="slider-label">180°</span>
+      </div>
+
+      <!-- Presets -->
+      <div class="presets">
+        <button class="btn" onclick="setAngle(0)">0°</button>
+        <button class="btn" onclick="setAngle(45)">45°</button>
+        <button class="btn primary" onclick="setAngle(90)">90° ⌂</button>
+        <button class="btn" onclick="setAngle(135)">135°</button>
+        <button class="btn" onclick="setAngle(180)">180°</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── TOPICS / CONFIG CARD ── -->
+  <div class="card">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('topics')">Topics</div>
+      <div class="tab" onclick="switchTab('config')">Config</div>
+    </div>
+
+    <!-- Topics panel -->
+    <div class="tab-panel active" id="panel-topics">
+      <div class="topic-grid" id="topicGrid">
+        <div class="topic-row">
+          <span class="topic-badge badge-sub">SUB</span>
+          <span class="topic-val" id="topicSet">loading…</span>
+        </div>
+        <div class="topic-row">
+          <span class="topic-badge badge-pub">PUB</span>
+          <span class="topic-val" id="topicState">loading…</span>
+        </div>
+        <div class="topic-row">
+          <span class="topic-badge badge-pub">PUB</span>
+          <span class="topic-val" id="topicStatus">loading…</span>
+        </div>
+      </div>
+      <div style="margin-top:16px; font-family:var(--mono); font-size:0.7rem; color:var(--muted); line-height:1.7;">
+        Send integer 0–180 to the SUB topic to move the servo.<br>
+        Home Assistant MQTT integration: use <code style="color:var(--accent)">cover</code> or <code style="color:var(--accent)">number</code> entity type.
+      </div>
+    </div>
+
+    <!-- Config panel -->
+    <div class="tab-panel" id="panel-config">
+      <form id="cfgForm" onsubmit="return false;">
+        <div class="form-grid">
+
+          <div class="form-group full">
+            <label>Device Name <span style="color:var(--accent2)">(used in MQTT topics)</span></label>
+            <input type="text" id="deviceName" name="deviceName" placeholder="esp32_servo"
+              class="device-name-highlight" autocomplete="off">
+          </div>
+
+          <div class="form-group">
+            <label>WiFi SSID</label>
+            <input type="text" id="wifiSSID" name="wifiSSID" placeholder="your_network">
+          </div>
+          <div class="form-group">
+            <label>WiFi Password</label>
+            <input type="password" id="wifiPassword" name="wifiPassword" placeholder="••••••••">
+          </div>
+
+          <div class="form-group">
+            <label>MQTT Broker</label>
+            <input type="text" id="mqttServer" name="mqttServer" placeholder="192.168.1.100">
+          </div>
+          <div class="form-group">
+            <label>MQTT Port</label>
+            <input type="number" id="mqttPort" name="mqttPort" placeholder="1883" min="1" max="65535">
+          </div>
+
+          <div class="form-group">
+            <label>MQTT Username</label>
+            <input type="text" id="mqttUser" name="mqttUser" placeholder="(optional)">
+          </div>
+          <div class="form-group">
+            <label>MQTT Password</label>
+            <input type="password" id="mqttPassword" name="mqttPassword" placeholder="(optional)">
+          </div>
+
+        </div>
+        <div class="form-actions">
+          <button class="btn danger" type="button" onclick="restartDevice()">Restart</button>
+          <button class="btn primary" type="button" onclick="saveConfig()">Save & Apply</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let currentAngle = 90;
+let sendTimer = null;
+
+// ── Dial rendering ──────────────────────────────────────────────────────────
+function updateDial(angle) {
+  const pct = angle / 180;
+  const totalArc = 251.3;   // 270° of a circle with r=80: 2π×80 × (270/360)
+  const offset = totalArc - (totalArc * pct);
+
+  document.getElementById('dialArc').setAttribute('stroke-dashoffset', offset);
+  document.getElementById('needle').setAttribute('transform',
+    `rotate(${-135 + pct * 270} 100 100)`);
+  document.getElementById('angleNum').textContent = angle;
+
+  // Update slider gradient
+  const slider = document.getElementById('servoSlider');
+  slider.style.setProperty('--pct', (pct * 100) + '%');
+}
+
+function drawTicks() {
+  const g = document.getElementById('ticks');
+  for (let a = 0; a <= 180; a += 30) {
+    const rad = ((a / 180 * 270) - 135) * Math.PI / 180;
+    const x1 = 100 + 72 * Math.cos(rad);
+    const y1 = 100 + 72 * Math.sin(rad);
+    const x2 = 100 + 80 * Math.cos(rad);
+    const y2 = 100 + 80 * Math.sin(rad);
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+    g.appendChild(line);
+  }
+}
+drawTicks();
+
+// ── Servo interaction ───────────────────────────────────────────────────────
+function setAngle(angle) {
+  angle = Math.round(Math.max(0, Math.min(180, angle)));
+  currentAngle = angle;
+  document.getElementById('servoSlider').value = angle;
+  updateDial(angle);
+  sendServo(angle);
+}
+
+document.getElementById('servoSlider').addEventListener('input', function () {
+  const angle = parseInt(this.value);
+  currentAngle = angle;
+  updateDial(angle);
+  clearTimeout(sendTimer);
+  sendTimer = setTimeout(() => sendServo(angle), 80);
+});
+
+async function sendServo(angle) {
+  try {
+    await fetch('/api/servo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ angle })
+    });
+  } catch(e) { /* ignore */ }
+}
+
+// ── Status polling ──────────────────────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+
+    setPill('pill-wifi', d.wifiConnected);
+    setPill('pill-mqtt', d.mqttConnected);
+
+    // Only sync angle if user isn't dragging
+    if (document.activeElement !== document.getElementById('servoSlider')) {
+      if (d.angle !== currentAngle) {
+        currentAngle = d.angle;
+        document.getElementById('servoSlider').value = d.angle;
+        updateDial(d.angle);
+      }
+    }
+
+    document.getElementById('topicSet').textContent    = d.topicSet    || '—';
+    document.getElementById('topicState').textContent  = d.topicState  || '—';
+    document.getElementById('topicStatus').textContent = d.topicStatus || '—';
+    // document.getElementById('topicStatus').textContent = d.deviceName + '/status';
+  } catch(e) { /* offline */ }
+}
+
+function setPill(id, ok) {
+  const el = document.getElementById(id);
+  el.classList.toggle('ok', !!ok);
+  el.classList.toggle('err', !ok);
+}
+
+// ── Config ──────────────────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    document.getElementById('deviceName').value = d.deviceName || '';
+    document.getElementById('wifiSSID').value    = d.wifiSSID   || '';
+    document.getElementById('mqttServer').value  = d.mqttServer || '';
+    document.getElementById('mqttPort').value    = d.mqttPort   || 1883;
+    document.getElementById('mqttUser').value    = d.mqttUser   || '';
+  } catch(e) { /* ignore */ }
+}
+
+async function saveConfig() {
+  const payload = {
+    deviceName:   document.getElementById('deviceName').value.trim(),
+    wifiSSID:     document.getElementById('wifiSSID').value,
+    mqttServer:   document.getElementById('mqttServer').value,
+    mqttPort:     parseInt(document.getElementById('mqttPort').value) || 1883,
+    mqttUser:     document.getElementById('mqttUser').value,
+  };
+  const pw = document.getElementById('wifiPassword').value;
+  const mp = document.getElementById('mqttPassword').value;
+  if (pw) payload.wifiPassword    = pw;
+  if (mp) payload.mqttPassword    = mp;
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (r.ok) toast('Config saved ✓', 'success');
+    else      toast('Save failed', 'error');
+  } catch(e) { toast('Connection error', 'error'); }
+}
+
+async function restartDevice() {
+  if (!confirm('Restart the ESP32?')) return;
+  try {
+    await fetch('/api/restart', { method: 'POST' });
+    toast('Restarting…', 'success');
+  } catch(e) { /* expected - device goes offline */ }
+}
+
+// ── Tabs ────────────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="${name}"]`).classList.add('active');
+  document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'config') loadConfig();
+}
+
+// ── Toast ───────────────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg, type = 'success') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 3000);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+updateDial(90);
+pollStatus();
+setInterval(pollStatus, 2000);
+</script>
+</body>
 </html>

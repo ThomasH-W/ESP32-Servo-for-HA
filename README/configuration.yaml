@@ -1,0 +1,32 @@
+mqtt:
+  # ── Number entity (direct angle control 0–180°) ───────────────────────────
+  number:
+    - name: "Servo Angle"
+      unique_id: esp32_servo_angle
+      command_topic: "house/cmnd/esp32_servo/set"
+      state_topic:   "house/stat/esp32_servo/state"
+      min: 90
+      max: 180
+      step: 1
+      unit_of_measurement: "°"
+      icon: mdi:rotate-right
+      availability_topic: "house/tele/esp32_servo/status"
+      payload_available:    "online"
+      payload_not_available: "offline"
+      retain: true
+      
+  # ── Cover entity (maps open=0°, closed=180°) ──────────────────────────────
+  # Uncomment if you want to model the servo as a cover (e.g. a valve/vent)
+  #
+  cover:
+   - name: "Servo Cover"
+     unique_id: esp32_servo_cover
+     command_topic: "house/cmnd/esp32_servo/set"
+     state_topic:   "house/stat/esp32_servo/state"
+     position_topic:  "house/stat/esp32_servo/state"
+     set_position_topic: "house/cmnd/esp32_servo/set"
+     position_open:   180
+     position_closed: 90
+     availability_topic: "house/tele/esp32_servo/status"
+     payload_available:    "online"
+     payload_not_available: "offline"

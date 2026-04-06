@@ -12,7 +12,6 @@ Control a servo via MQTT (Home Assistant) with a built-in web interface for conf
 - **WiFi + MQTT credentials** stored in `/config.json` on LittleFS
 - **AP fallback** – if WiFi fails, opens `ESP32_Servo_Config` hotspot
 - **LWT** (Last Will & Testament) – publishes `offline` on disconnect
-- **DISCOVERY** - device will be discovered by home assitant MQTT integration
 
 ---
 

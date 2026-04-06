@@ -1,355 +1,584 @@
 /*
   File : main.cpp
-  Date : 26.03.2021
-
-  ESP32 Internet Radio with Display based on TTGO
-  https://github.com/ThomasH-W/ESP32-Radio-TTGO
+  Date : 3.4.2026
 
   ToDo:
-    ESP deepsleep, wakeup
-    Battery monitoring
+
+* ESP32 Servo MQTT Controller
+* - Controls a servo via MQTT
+* - Web interface served from LittleFS
+* - Configurable device name, WiFi, MQTT via web UI
+* - Config stored in LittleFS as /config.json
+*
+* Board: ESP32 (any variant)
+* Libraries needed:
+*   - ESP32Servo            (by Kevin Harrington)
+*   - PubSubClient          (by Nick O'Leary)
+*   - ArduinoJson           (by Benoit Blanchon) v6+
+*   - LittleFS (built-in with ESP32 Arduino core >= 2.x)
 */
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <LittleFS.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <ESP32Servo.h>
 
-// Wrapper for Serial.print
-#define DEBUG true
-#include "_SerialPrintf.h"
-#include "_GPIO.h"
-
-#if !(defined(ESP32))
-#error This code is intended to run on the ESP8266 or ESP32 platform! Please check your Tools->Board setting.
+// Try secret file first, fall back to defaults
+#if __has_include("user_config_secret.h")
+  #include "user_config_secret.h"
+#else
+  #include "user_config.h"
 #endif
 
-#define LED_ON HIGH
-#define LED_OFF LOW
-
-#include "wifiMgr.h"
-void loop_audio();
-void setup_rotary();
-void loop_rotary();
-
-#include "FS_tools.h"
-
-#include "myDisplay.h"
-myDisplay myDisplay1;
-char statusChar[50];
-wifi_data_struct wifiData;
-
-#include "myNTP.h"
-myNTP myNtp;
-unsigned long lastNtp = 0;
-
-#include <AceButton.h>
-using namespace ace_button;
-const int BUTTON1_PIN = PIN_BTN_1;
-const int BUTTON2_PIN = PIN_BTN_2;
-const int BUTTON3_PIN = PIN_BTN_3; // 37;
-const int BUTTON4_PIN = PIN_BTN_4; // 37;
-const int BUTTON5_PIN = PIN_BTN_5; // 37;
-const int BUTTON6_PIN = PIN_BTN_6; // 37;
-const int BUTTON7_PIN = PIN_BTN_7; // 37;
-const int BUTTON8_PIN = PIN_BTN_8; // 37;
-
-AceButton button1(BUTTON1_PIN);
-AceButton button2(BUTTON2_PIN);
-AceButton button3(BUTTON3_PIN);
-AceButton button4(BUTTON4_PIN);
-AceButton button5(BUTTON5_PIN);
-AceButton button6(BUTTON6_PIN);
-AceButton button7(BUTTON7_PIN);
-AceButton button8(BUTTON8_PIN);
-void handleEvent(AceButton *, uint8_t, uint8_t);
-const int LED_PIN = 2; // for ESP32
-
-audio_data_struct *audio_data_ptr;
-wifi_data_struct *wifi_data_ptr;
-
-bool displayUpdate = false;
-int mode = 0, oldMode = 0; // based on state
-unsigned long currentMillisLoop = 0, previousMillisDisplay = 0, intervalDisplayLoop = 3000;
-
-// --------------------------------------------------------------------------
-// https://github.com/bxparks/AceButton
-// https://github.com/bxparks/AceButton/blob/develop/examples/TwoButtonsUsingOneButtonConfig/TwoButtonsUsingOneButtonConfig.ino
-void setup_button()
+// ─── Runtime config struct ────────────────────────────────────────────────────
+struct Config
 {
-  // Buttons use the built-in pull up register.
-  pinMode(BUTTON1_PIN, INPUT_PULLUP);
-  pinMode(BUTTON2_PIN, INPUT_PULLUP);
-  pinMode(BUTTON3_PIN, INPUT_PULLUP);
-  pinMode(BUTTON4_PIN, INPUT_PULLUP);
-  pinMode(BUTTON5_PIN, INPUT_PULLUP);
-  pinMode(BUTTON6_PIN, INPUT_PULLUP);
-  pinMode(BUTTON7_PIN, INPUT_PULLUP);
-  pinMode(BUTTON8_PIN, INPUT_PULLUP);
+  char wifiSSID[64];
+  char wifiPassword[64];
+  char mqttServer[64];
+  int mqttPort;
+  char mqttUser[64];
+  char mqttPassword[64];
+  char deviceName[64]; // used as MQTT topic prefix
+};
 
-  // Configure the ButtonConfig with the event handler, and enable all higher
-  // level events.
-  ButtonConfig *buttonConfig = ButtonConfig::getSystemButtonConfig();
-  buttonConfig->setEventHandler(handleEvent);
-  buttonConfig->setFeature(ButtonConfig::kFeatureClick);
-  buttonConfig->setFeature(ButtonConfig::kFeatureDoubleClick);
-  buttonConfig->setFeature(ButtonConfig::kFeatureLongPress);
-  buttonConfig->setFeature(ButtonConfig::kFeatureRepeatPress);
+Config cfg;
 
-  // Check if the button was pressed while booting
-  if (button1.isPressedRaw())
-  {
-    Serial.println(F("setup(): button 1 was pressed while booting"));
-  }
-  if (button2.isPressedRaw())
-  {
-    Serial.println(F("setup(): button 2 was pressed while booting"));
-  }
-  if (button3.isPressedRaw())
-  {
-    Serial.println(F("setup(): button 3 was pressed while booting"));
-  }
+// ─── MQTT topic helpers (built from deviceName at runtime) ───────────────────
+// Subscribed:  <deviceName>/servo/set    → payload: 0–180 (degrees)
+// Published:   <deviceName>/servo/state  → current angle
+// Published:   <deviceName>/status       → "online" / "offline" (LWT)
+char topicSet[128];
+char topicSetPct[128];
+char topicState[128];
+char topicStatus[128];
+char topicDiscovery[512];
+char topicDiscoveryPct[512];
 
-} // end of function
+// ─── Objects ─────────────────────────────────────────────────────────────────
+Servo servo;
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
+WebServer server(80);
 
-// --------------------------------------------------------------------------
-// The event handler for the button.
-void handleEvent(AceButton *button, uint8_t eventType, uint8_t buttonState)
+int currentAngle = SERVO_INITIAL;
+bool needsDiscovery = true;
+bool wifiConnected = false;
+bool mqttConnected = false;
+bool mqttReturnCodeOK = false;
+unsigned long lastMqttReconnect = 0;
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONFIG  –  load / save / build topics
+// ═════════════════════════════════════════════════════════════════════════════
+
+void buildTopics()
 {
-  int butPressed = button->getPin();
+  snprintf(topicSet, sizeof(topicSet), "house/cmnd/%s/set", cfg.deviceName);
+  snprintf(topicSetPct, sizeof(topicSetPct), "house/cmnd/%s/set_pct", cfg.deviceName);
+  snprintf(topicState, sizeof(topicState), "house/stat/%s/state", cfg.deviceName);
+  snprintf(topicStatus, sizeof(topicStatus), "house/tele/%s/status", cfg.deviceName);
 
-  // Print out a message for all events, for both buttons.
-  Serial.print(F("handleEvent(): pin: "));
-  Serial.print(butPressed);
-  Serial.print(F("; eventType: "));
-  Serial.print(eventType);
-  Serial.print(F("; buttonState: "));
-  Serial.println(buttonState);
+  snprintf(topicDiscovery, sizeof(topicDiscovery), "homeassistant/number/%s/config", cfg.deviceName);
+  snprintf(topicDiscoveryPct, sizeof(topicDiscoveryPct), "homeassistant/number/%s_pct/config", cfg.deviceName);
+}
 
-  // Control the LED only for the Pressed and Released events of Button 1.
-  // Notice that if the MCU is rebooted while the button is pressed down, no
-  // event is triggered and the LED remains off.
-  /*
-#define PIN_BTN_4 27 // preset+
-#define PIN_BTN_1 0  // preset+ - onboard button
-#define PIN_BTN_2 35 // mode - onboard button
-#define PIN_BTN_3 36 // mode
-#define PIN_BTN_5 37 // reset
-
-#define PIN_BTN_6 32 // volume +
-#define PIN_BTN_7 33 // volume -
-
-#define PIN_BTN_8 38 // preset -
-*/
-
-  switch (eventType)
-  {
-  case AceButton::kEventReleased:                               // kEventPressed
-    if (butPressed == BUTTON1_PIN || butPressed == BUTTON4_PIN) // preset+
-    {
-      serial_printf("handleEvent> preset_up for pin %d\n", butPressed);
-      audio_mode(AUDIO_PRESET_UP);
-    }
-    else if (butPressed == BUTTON2_PIN || butPressed == BUTTON3_PIN) // mode
-    {
-      serial_printf("handleEvent> GUI for pin %d\n", butPressed);
-      // audio_mode(AUDIO_MUTE);
-      if (mode == ST_GUI_1)
-        mode = ST_GUI_4;
-      else
-        mode = ST_GUI_1;
-      displayUpdate = true;
-    }
-    else if (butPressed == BUTTON5_PIN) // reset
-    {
-      serial_printf("handleEvent> RESET for pin %d\n", butPressed);
-      delay(10);
-      ESP.restart();
-    }
-    else if (butPressed == BUTTON6_PIN) // volume+
-    {
-      serial_printf("handleEvent> volume+ for pin %d\n", butPressed);
-      audio_mode(AUDIO_VOLUME_UP);
-    }
-    else if (butPressed == BUTTON7_PIN) // volume-
-    {
-      serial_printf("handleEvent> volume- for pin %d\n", butPressed);
-      audio_mode(AUDIO_VOLUME_DOWN);
-    }
-    else if (butPressed == BUTTON8_PIN) // volume-
-    {
-      serial_printf("handleEvent> preset- for pin %d\n", butPressed);
-      audio_mode(AUDIO_PRESET_DOWN);
-    }
-    break;
-  default:
-    serial_printf("handleEvent> unknown for pin %d & %d\n", butPressed, eventType);
-  }
-} // end of function
-
-// --------------------------------------------------------------------------
-// set flag for updating display, will be recognized next time in displayLoop
-void main_displayUpdate(bool clearScreen)
+void loadDefaultConfig()
 {
-  if (audio_data_ptr)                                                       // pointer is initialized after display setup
-    serial_printf("main::main_displayUpdate %d\n", audio_data_ptr->update); // audio_data_ptr->update
+  strlcpy(cfg.wifiSSID, DEFAULT_WIFI_SSID, sizeof(cfg.wifiSSID));
+  strlcpy(cfg.wifiPassword, DEFAULT_WIFI_PASSWORD, sizeof(cfg.wifiPassword));
+  strlcpy(cfg.mqttServer, DEFAULT_MQTT_SERVER, sizeof(cfg.mqttServer));
+  cfg.mqttPort = DEFAULT_MQTT_PORT;
+  strlcpy(cfg.mqttUser, DEFAULT_MQTT_USER, sizeof(cfg.mqttUser));
+  strlcpy(cfg.mqttPassword, DEFAULT_MQTT_PASSWORD, sizeof(cfg.mqttPassword));
+  strlcpy(cfg.deviceName, DEFAULT_DEVICE_NAME, sizeof(cfg.deviceName));
+}
+
+bool loadConfig()
+{
+  File f = LittleFS.open("/config.json", "r");
+  if (!f)
+  {
+    Serial.println("[Config] No config.json found, using defaults.");
+    loadDefaultConfig();
+    return false;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+
+  if (err)
+  {
+    Serial.printf("[Config] JSON parse error: %s\n", err.c_str());
+    loadDefaultConfig();
+    return false;
+  }
+
+  strlcpy(cfg.wifiSSID, doc["wifiSSID"] | DEFAULT_WIFI_SSID, sizeof(cfg.wifiSSID));
+  strlcpy(cfg.wifiPassword, doc["wifiPassword"] | DEFAULT_WIFI_PASSWORD, sizeof(cfg.wifiPassword));
+  strlcpy(cfg.mqttServer, doc["mqttServer"] | DEFAULT_MQTT_SERVER, sizeof(cfg.mqttServer));
+  cfg.mqttPort = doc["mqttPort"] | DEFAULT_MQTT_PORT;
+  strlcpy(cfg.mqttUser, doc["mqttUser"] | DEFAULT_MQTT_USER, sizeof(cfg.mqttUser));
+  strlcpy(cfg.mqttPassword, doc["mqttPassword"] | DEFAULT_MQTT_PASSWORD, sizeof(cfg.mqttPassword));
+  strlcpy(cfg.deviceName, doc["deviceName"] | DEFAULT_DEVICE_NAME, sizeof(cfg.deviceName));
+
+  Serial.printf("[Config] Loaded. Device: %s\n", cfg.deviceName);
+  return true;
+}
+
+bool saveConfig()
+{
+  JsonDocument doc;
+  doc["wifiSSID"] = cfg.wifiSSID;
+  doc["wifiPassword"] = cfg.wifiPassword;
+  doc["mqttServer"] = cfg.mqttServer;
+  doc["mqttPort"] = cfg.mqttPort;
+  doc["mqttUser"] = cfg.mqttUser;
+  doc["mqttPassword"] = cfg.mqttPassword;
+  doc["deviceName"] = cfg.deviceName;
+
+  File f = LittleFS.open("/config.json", "w");
+  if (!f)
+  {
+    Serial.println("[Config] Failed to open config.json for writing.");
+    return false;
+  }
+  serializeJson(doc, f);
+  f.close();
+  Serial.println("[Config] Saved.");
+  return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SERVO
+// ═════════════════════════════════════════════════════════════════════════════
+
+void moveServo(int angle)
+{
+  angle = constrain(angle, 0, 180);
+  currentAngle = angle;
+  servo.write(angle);
+  Serial.printf("[Servo] → %d°\n", angle);
+
+  // Publish state back
+  if (mqtt.connected())
+  {
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", angle);
+    mqtt.publish(topicState, buf, true);
+  }
+}
+
+// ─────────────────────────────────────────────
+//  HA DISCOVERY  – publishes a retained config
+//  message so Home Assistant auto-creates the entity
+// ─────────────────────────────────────────────
+void publishDiscovery()
+{
+  JsonDocument doc;
+
+  doc["name"] = "Servo Position";
+  doc["unique_id"] = cfg.deviceName;
+  doc["command_topic"] = topicSet;
+  doc["state_topic"] = topicState;
+  doc["availability_topic"] = topicStatus;
+  doc["payload_available"] = "online";
+  doc["payload_not_available"] = "offline";
+  doc["min"] = SERVO_MIN_DEG;
+  doc["max"] = SERVO_MAX_DEG;
+  doc["step"] = 1;
+  doc["unit_of_measurement"] = "°";
+  doc["icon"] = "mdi:rotate-right";
+
+  // Nested device block groups entity under one device in HA
+  doc["device"]["identifiers"][0] = cfg.deviceName;
+  doc["device"]["name"] = cfg.deviceName;
+  doc["device"]["model"] = "ESP32 + MG996R";
+  doc["device"]["manufacturer"] = "DIY";
+  doc["device"]["sw_version"] = "1.0.0";
+
+  char payload[512];
+  serializeJson(doc, payload);
+
+  // Publish retained so HA picks it up after restart
+  Serial.printf("[MQTT] %s → %s; length:%d\n", topicDiscovery, payload, strlen(payload));
+  bool ok = mqtt.publish(topicDiscovery, payload, /*retain=*/true);
+  Serial.printf("Publish Discovery %s: %s\n\n", ok ? "OK" : "FAILED", topicDiscovery);
+
+  // ── Optional second entity: percentage control ──────────────────
+  JsonDocument doc2;
+  // String discoveryPct = "homeassistant/number/" + baseTopic + "_pct/config";
+
+  doc2["name"] = "Servo Position %";
+  doc2["unique_id"] = String(cfg.deviceName) + "_servo_pct";
+  doc2["command_topic"] = topicSetPct;
+  doc2["state_topic"] = topicState; // reuses the degree state; or add separate
+  doc2["availability_topic"] = topicStatus;
+  doc2["payload_available"] = "online";
+  doc2["payload_not_available"] = "offline";
+  doc2["min"] = 0;
+  doc2["max"] = 100;
+  doc2["step"] = 1;
+  doc2["unit_of_measurement"] = "%";
+  doc2["icon"] = "mdi:percent";
+  
+  doc2["device"]["identifiers"][0] = cfg.deviceName;
+  doc2["device"]["name"] = cfg.deviceName;
+
+
+  // char payload2[512];
+  serializeJson(doc2, payload);
+  Serial.printf("[MQTT] %s → %s; length:%d\n", topicDiscoveryPct, payload, strlen(payload));
+  ok = mqtt.publish(topicDiscoveryPct, payload, /*retain=*/true);
+  Serial.printf("Publish Discovery %s: %s\n\n", ok ? "OK" : "FAILED", topicDiscoveryPct);
+
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MQTT
+// ═════════════════════════════════════════════════════════════════════════════
+void mqttCallback(char *topic, byte *payload, unsigned int length)
+{
+  char msg[16] = {0};
+  if (length >= sizeof(msg))
+    length = sizeof(msg) - 1;
+  memcpy(msg, payload, length);
+  Serial.printf("[MQTT] %s → %s\n", topic, msg);
+
+  if (strcmp(topic, topicSet) == 0)
+  {
+    int angle = atoi(msg);
+    moveServo(angle);
+  }
+}
+
+bool mqttReconnect()
+{
+  if (mqtt.connected())
+    return true;
+  if (millis() - lastMqttReconnect < 5000)
+    return false;
+  lastMqttReconnect = millis();
+
+  Serial.printf("[MQTT] Connecting to %s:%d as %s ...\n",
+                cfg.mqttServer, cfg.mqttPort, cfg.deviceName);
+
+  bool ok;
+  if (strlen(cfg.mqttUser) > 0)
+  {
+    ok = mqtt.connect(cfg.deviceName, cfg.mqttUser, cfg.mqttPassword,
+                      topicStatus, 0, true, "offline");
+  }
   else
-    serial_printf("main::main_displayUpdate\n"); // audio_data_ptr->update
-  displayUpdate = true;
-  if (clearScreen)
-    displayReset();
-} // end of function
-
-// ----------------------------------------------------------------------------------------
-// if not in boot mode, print message on TFT display
-void displayDebugPrint(const char *message)
-{
-  if (1 > mode)
-    myDisplay1.print(message);
-  Serial.print(message);
-} // end of function
-
-// ----------------------------------------------------------------------------------------
-// if not in boot mode, print message on TFT display
-void displayDebugPrintln(const char *message)
-{
-  if (1 > mode)
-    myDisplay1.println(message);
-  Serial.println(message);
-} // end of function
-
-// ---------------------------------------------------------------------------------------
-// clear display, request update of current UI
-void displayReset(void)
-{
-  serial_println("main::displayReset");
-  myDisplay1.clear();
-  displayUpdate = true;
-} // end of function
-
-// ---------------------------------------------------------------------------------------
-// after interval, fallback to GUI1 showing mani screen
-// if audio_data changed, flag update will be set
-void displayLoop(void)
-{
-  currentMillisLoop = millis();
-  if (currentMillisLoop - previousMillisDisplay > intervalDisplayLoop)
   {
-    audio_data_ptr->update = UP_INFO;
-    mode = ST_GUI_1;
-    previousMillisDisplay = millis();
+    ok = mqtt.connect(cfg.deviceName, nullptr, nullptr,
+                      topicStatus, 0, true, "offline");
   }
 
-  switch (audio_data_ptr->update)
+  if (ok)
   {
-  case UP_INFO: // 3
-    // mode = ST_GUI_1;
-    break;
-  case UP_VOLUME: // 3
-    mode = ST_GUI_2;
-    break;
-  case UP_PRESET: // 4
-    mode = ST_GUI_3;
-    break;
-  }
+    Serial.println("[MQTT] Connected.");
+    mqtt.publish(topicStatus, "online", true);
+    mqtt.subscribe(topicSet);
+    mqtt.publish(topicDiscovery, "init", true);
 
-  if (mode != oldMode)
-  {
-    myDisplay1.clear();
-    oldMode = mode;
-    displayUpdate = true;
-  }
-
-  if (displayUpdate == true)
-  {
-    switch (mode)
+    // sendDiscovery();
+    // Publish discovery once per connection
+    if (needsDiscovery)
     {
-    case ST_GUI_1:     // 3
-      pub_wifi_info(); // get latest wifi signal strength
-      myNtp.value(wifi_data_ptr->timeOfDayChar, wifi_data_ptr->dateChar);
-      myDisplay1.Gui1(audio_data_ptr, wifi_data_ptr); // text
-      break;
-    case ST_GUI_2:                     // 4
-      myDisplay1.Gui2(audio_data_ptr); // gauge left/right
-      break;
-    case ST_GUI_3:                     // 4
-      myDisplay1.Gui3(audio_data_ptr); // gauge left/right
-      break;
-    case ST_GUI_4:                    // 4
-      myDisplay1.Gui4(wifi_data_ptr); // gauge left/right
-      break;
+      publishDiscovery();
+      needsDiscovery = false;
     }
-    previousMillisDisplay = millis();
-    displayUpdate = false;
+
+    mqttConnected = true;
+
+    // Publish current state
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", currentAngle);
+    mqtt.publish(topicState, buf, true);
+  }
+  else
+  {
+    Serial.printf("[MQTT] Failed, rc=%d\n", mqtt.state());
+    mqttConnected = false;
+  }
+  return ok;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// WEB SERVER – routes
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Helper: serve a file from LittleFS with correct MIME type
+bool serveFile(const char *path, const char *mime)
+{
+  File f = LittleFS.open(path, "r");
+  if (!f)
+    return false;
+  server.streamFile(f, mime);
+  f.close();
+  return true;
+}
+
+String getMimeType(const String &path)
+{
+  if (path.endsWith(".html"))
+    return "text/html";
+  if (path.endsWith(".css"))
+    return "text/css";
+  if (path.endsWith(".js"))
+    return "application/javascript";
+  if (path.endsWith(".json"))
+    return "application/json";
+  if (path.endsWith(".ico"))
+    return "image/x-icon";
+  if (path.endsWith(".svg"))
+    return "image/svg+xml";
+  return "text/plain";
+}
+
+// GET /  →  serve index.html from LittleFS
+void handleRoot()
+{
+  if (!serveFile("/index.html", "text/html"))
+  {
+    server.send(500, "text/plain", "index.html not found in LittleFS. "
+                                   "Please upload data/ folder via LittleFS upload tool.");
+  }
+}
+
+// GET /api/status  →  JSON status
+void handleApiStatus()
+{
+  JsonDocument doc;
+  doc["deviceName"] = cfg.deviceName;
+  doc["angle"] = currentAngle;
+  doc["wifiConnected"] = wifiConnected;
+  doc["mqttConnected"] = mqttConnected;
+  doc["mqttServer"] = cfg.mqttServer;
+  doc["topicSet"] = topicSet;
+  doc["topicState"] = topicState;
+  doc["topicStatus"] = topicStatus;
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// GET /api/config  →  JSON config (no passwords)
+void handleApiConfigGet()
+{
+  JsonDocument doc;
+  doc["wifiSSID"] = cfg.wifiSSID;
+  doc["mqttServer"] = cfg.mqttServer;
+  doc["mqttPort"] = cfg.mqttPort;
+  doc["mqttUser"] = cfg.mqttUser;
+  doc["deviceName"] = cfg.deviceName;
+  // Passwords intentionally omitted from GET response
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// POST /api/config  →  update config from JSON body
+void handleApiConfigPost()
+{
+  if (!server.hasArg("plain"))
+  {
+    server.send(400, "application/json", "{\"error\":\"No body\"}");
+    return;
   }
 
-} // end of function
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, server.arg("plain"));
+  if (err)
+  {
+    server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+    return;
+  }
 
-// --------------------------------------------------------------------------
+  // Update only provided fields
+  // V6: if (doc.containsKey("value")) {
+  // V7: if (doc["value"].is<JsonVariant>()) {
+  //if (doc.containsKey("wifiSSID"))
+  if (doc["wifiSSID"].is<JsonVariant>()) 
+    strlcpy(cfg.wifiSSID, doc["wifiSSID"], sizeof(cfg.wifiSSID));
+  if (doc["wifiPassword"].is<JsonVariant>()) 
+    strlcpy(cfg.wifiPassword, doc["wifiPassword"], sizeof(cfg.wifiPassword));
+  if (doc["mqttServer"].is<JsonVariant>())
+    strlcpy(cfg.mqttServer, doc["mqttServer"], sizeof(cfg.mqttServer));
+  if (doc["mqttPort"].is<JsonVariant>())
+    cfg.mqttPort = doc["mqttPort"];
+  if (doc["mqttUser"].is<JsonVariant>())
+    strlcpy(cfg.mqttUser, doc["mqttUser"], sizeof(cfg.mqttUser));
+  if (doc["mqttPassword"].is<JsonVariant>())
+    strlcpy(cfg.mqttPassword, doc["mqttPassword"], sizeof(cfg.mqttPassword));
+  if (doc["deviceName"].is<JsonVariant>())
+    strlcpy(cfg.deviceName, doc["deviceName"], sizeof(cfg.deviceName));
+
+  saveConfig();
+  buildTopics();
+
+  // Re-apply MQTT broker address/port
+  mqtt.setServer(cfg.mqttServer, cfg.mqttPort);
+  if (mqtt.connected())
+  {
+    mqtt.disconnect();
+    mqttConnected = false;
+  }
+
+  server.send(200, "application/json", "{\"status\":\"saved\",\"restarting\":false}");
+  Serial.println("[Web] Config updated via web UI.");
+}
+
+// POST /api/servo  →  { "angle": 90 }
+void handleApiServo()
+{
+  if (!server.hasArg("plain"))
+  {
+    server.send(400, "application/json", "{\"error\":\"No body\"}");
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")))
+  {
+    server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+    return;
+  }
+  int angle = doc["angle"] | currentAngle;
+  moveServo(angle);
+  server.send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+// POST /api/restart
+void handleApiRestart()
+{
+  server.send(200, "application/json", "{\"status\":\"restarting\"}");
+  delay(500);
+  ESP.restart();
+}
+
+void setupWebServer()
+{
+  server.on("/", HTTP_GET, handleRoot);
+  server.on("/api/status", HTTP_GET, handleApiStatus);
+  server.on("/api/config", HTTP_GET, handleApiConfigGet);
+  server.on("/api/config", HTTP_POST, handleApiConfigPost);
+  server.on("/api/servo", HTTP_POST, handleApiServo);
+  server.on("/api/restart", HTTP_POST, handleApiRestart);
+
+  // Serve any other static file from LittleFS
+  server.onNotFound([]()
+                    {
+    String path = server.uri();
+    if (LittleFS.exists(path)) {
+      File f = LittleFS.open(path, "r");
+      server.streamFile(f, getMimeType(path));
+      f.close();
+    } else {
+      server.send(404, "text/plain", "Not found");
+    } });
+
+  server.enableCORS(true);
+  server.begin();
+  Serial.println("[Web] HTTP server started on port 80");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SETUP & LOOP
+// ═════════════════════════════════════════════════════════════════════════════
+
 void setup()
 {
-  serial_begin(115200);
-  while (!Serial)
-    ;
-  delay(50);
-  serial_println("-------------------------------------------------------- wifi init th");
+  Serial.begin(MONITOR_SPEED);
+  delay(200);
+  Serial.println("\n[Boot] ESP32 Servo MQTT Controller");
 
-  myDisplay1.begin(); // start display
-  delay(10);
-  myDisplay1.println("> Boot TTGO-Radio ...");
-
-  setup_button();
-  setup_gpio_pins(); // get default gpio pins
-
-  myDisplay1.print("> Firmware ");
-  myDisplay1.println(FIRMWARE_VERSION);
-
-  bool func_success = setup_read_file(); // read config file setup.ini from littleFS and pass every line to parser
-  if (func_success == false)
+  // LittleFS
+  if (!LittleFS.begin(true))
+  { // true = format on fail
+    Serial.println("[FS] LittleFS mount FAILED");
+  }
+  else
   {
-    myDisplay1.println("> PANIC: setup.ini not found");
-    myDisplay1.println("> Build and upload filesystem");
-    myDisplay1.println("> System halted");
-    while (true)
-      ; // loop forever
+    Serial.println("[FS] LittleFS mounted");
   }
 
-  readVoltage(); // must be done before wifi is established - conflict using ADC
-  // myDisplay1.Gui0(); test gui using differrent fonts, files to be loaded into SPIFFS
+  // Load config
+  loadConfig();
+  buildTopics();
 
-  myDisplay1.println("> setup WiFi ...");
-  setup_wifi(); // call wifimanager and establish mqtt connection
-  wifi_data_ptr = setup_wifi_info();
+  // Servo
+  ESP32PWM::allocateTimer(0);
+  servo.setPeriodHertz(50);
+  servo.attach(SERVO_PIN, SERVO_MIN_US, SERVO_MAX_US);
+  servo.write(currentAngle);
+  Serial.printf("[Servo] Attached to GPIO%d at %d°\n", SERVO_PIN, currentAngle);
 
-  myDisplay1.println("> setup NTP ...");
-  myNtp.begin();
+  // WiFi
+  Serial.printf("[WiFi] Connecting to %s ...\n", cfg.wifiSSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(cfg.wifiSSID, cfg.wifiPassword);
 
-  myDisplay1.println("> setup audio ...");
-  audio_data_ptr = setup_audio(); // start audio
+  unsigned long t = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t < 15000)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
 
-  mqtt_pub_tele("INFO", "setup complete");
-  list_FS(); // debug: show files in littlefs
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    wifiConnected = true;
+    Serial.printf("[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
+  }
+  else
+  {
+    Serial.println("[WiFi] Failed to connect. Starting AP for config...");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("ESP32_Servo_Config", "config1234");
+    Serial.printf("[WiFi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
+  }
 
-  setup_rotary(); // initialize rotary encoder
-  myDisplay1.println("> setup complete");
+  // MQTT
+  mqtt.setServer(cfg.mqttServer, cfg.mqttPort);
+  mqtt.setBufferSize(1024); // This is a classic PubSubClient gotcha. The default internal buffer size is 256 bytes, and that budget covers the entire MQTT packet — not just your payload.
+  mqtt.setCallback(mqttCallback);
 
-  mode = ST_GUI_1; // switch to default GUI 7 main screen
-} // end of function
+  // Web server
+  setupWebServer();
+}
 
-// --------------------------------------------------------------------------
 void loop()
 {
-  loop_wifi();
-  loop_rotary();
-  loop_audio();
-  myNtp.loop();
+  server.handleClient();
 
-  button1.check();
-  button2.check();
-  button3.check();
-  button4.check();
-  button5.check();
-  button6.check();
-  button7.check();
-  button8.check();
+  // Keep WiFi alive
+  wifiConnected = (WiFi.status() == WL_CONNECTED);
 
-  displayLoop();
-  yield();
-} // end of function
+  // MQTT reconnect + loop
+  if (wifiConnected)
+  {
+    if (!mqtt.connected())
+    {
+      mqttReconnect();
+    }
+    if (mqtt.connected())
+    {
+      mqtt.loop();
+      mqttConnected = true;
+    }
+    else
+    {
+      mqttConnected = false;
+    }
+  }
+
+  delay(1);
+}
