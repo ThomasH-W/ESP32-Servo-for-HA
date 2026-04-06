@@ -21,22 +21,20 @@ Control a servo via MQTT (Home Assistant) with a built-in web interface for conf
 | Item | Detail |
 |------|--------|
 | Board | Any ESP32 (DevKit, WROOM, S3, …) |
-| Servo | Standard 3-wire PWM servo |
-| Servo pin | GPIO 18 (change `SERVO_PIN` in sketch) |
+| Servo | Standard 3-wire PWM positional 180 degree servo, e.g. SG90 or MG996R |
+| Servo pin | GPIO 2 (change `SERVO_PIN` in user_config.h ) |
 
-Wiring: servo signal → GPIO 18, servo VCC → 5 V (external supply recommended), GND → common ground.
+Wiring: servo signal → GPIO 2, servo VCC → 5 V (external supply recommended), GND → common ground.
 
 ---
 
 ## Software Requirements
 
-Install via **Arduino Library Manager**:
-
 | Library | Author |
 |---------|--------|
 | ESP32Servo | Kevin Harrington |
 | PubSubClient | Nick O'Leary |
-| ArduinoJson | Benoit Blanchon (v6+) |
+| ArduinoJson | Benoit Blanchon (v7) |
 
 LittleFS is built into the ESP32 Arduino core ≥ 2.x — no separate install needed.
 
@@ -46,10 +44,10 @@ LittleFS is built into the ESP32 Arduino core ≥ 2.x — no separate install ne
 
 ```
 esp32_servo_mqtt/
-├── esp32_servo_mqtt.ino   ← main sketch
+├── main.cpp   ← main sketch
 ├── data/
 │   └── index.html         ← web UI (uploaded to LittleFS)
-├── homeassistant_mqtt.yaml
+├── user_config.h 
 └── README.md
 ```
 
@@ -135,7 +133,7 @@ See `homeassistant_mqtt.yaml`. After adding the YAML and reloading HA, a
 
 ---
 
-## Customisation
+## Customisation in user_config.h
 
 - **Servo pin**: change `SERVO_PIN`
 - **Pulse range**: change `SERVO_MIN_US` / `SERVO_MAX_US` for non-standard servos

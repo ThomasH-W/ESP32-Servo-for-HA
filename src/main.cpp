@@ -43,6 +43,7 @@ struct Config
   char mqttUser[64];
   char mqttPassword[64];
   char deviceName[64]; // used as MQTT topic prefix
+  char mqttPrefix[64]; // e.g. "home" or "house"
 };
 
 Config cfg;
@@ -77,13 +78,13 @@ unsigned long lastMqttReconnect = 0;
 
 void buildTopics()
 {
-  snprintf(topicSet, sizeof(topicSet), "house/cmnd/%s/set", cfg.deviceName);
-  snprintf(topicSetPct, sizeof(topicSetPct), "house/cmnd/%s/set_pct", cfg.deviceName);
-  snprintf(topicState, sizeof(topicState), "house/stat/%s/state", cfg.deviceName);
-  snprintf(topicStatus, sizeof(topicStatus), "house/tele/%s/status", cfg.deviceName);
+  snprintf(topicSet, sizeof(topicSet), "%scmnd/%s/set", cfg.mqttPrefix, cfg.deviceName);
+  snprintf(topicSetPct, sizeof(topicSetPct), "%scmnd/%s/set_pct", cfg.mqttPrefix, cfg.deviceName);
+  snprintf(topicState, sizeof(topicState), "%sstat/%s/state", cfg.mqttPrefix, cfg.deviceName);
+  snprintf(topicStatus, sizeof(topicStatus), "%stele/%s/status", cfg.mqttPrefix, cfg.deviceName);
 
-  snprintf(topicDiscovery, sizeof(topicDiscovery), "homeassistant/number/%s/config", cfg.deviceName);
-  snprintf(topicDiscoveryPct, sizeof(topicDiscoveryPct), "homeassistant/number/%s_pct/config", cfg.deviceName);
+  snprintf(topicDiscovery, sizeof(topicDiscovery), "homeassistant/number/%s/config", cfg.mqttPrefix, cfg.deviceName);
+  snprintf(topicDiscoveryPct, sizeof(topicDiscoveryPct), "homeassistant/number/%s_pct/config", cfg.mqttPrefix, cfg.deviceName);
 }
 
 void loadDefaultConfig()
@@ -95,6 +96,7 @@ void loadDefaultConfig()
   strlcpy(cfg.mqttUser, DEFAULT_MQTT_USER, sizeof(cfg.mqttUser));
   strlcpy(cfg.mqttPassword, DEFAULT_MQTT_PASSWORD, sizeof(cfg.mqttPassword));
   strlcpy(cfg.deviceName, DEFAULT_DEVICE_NAME, sizeof(cfg.deviceName));
+  strlcpy(cfg.mqttPrefix, DEFAULT_MQTT_PREFIX, sizeof(cfg.mqttPrefix));
 }
 
 bool loadConfig()
@@ -125,6 +127,7 @@ bool loadConfig()
   strlcpy(cfg.mqttUser, doc["mqttUser"] | DEFAULT_MQTT_USER, sizeof(cfg.mqttUser));
   strlcpy(cfg.mqttPassword, doc["mqttPassword"] | DEFAULT_MQTT_PASSWORD, sizeof(cfg.mqttPassword));
   strlcpy(cfg.deviceName, doc["deviceName"] | DEFAULT_DEVICE_NAME, sizeof(cfg.deviceName));
+  strlcpy(cfg.mqttPrefix, doc["mqttPrefix"] | DEFAULT_MQTT_PREFIX, sizeof(cfg.mqttPrefix));
 
   Serial.printf("[Config] Loaded. Device: %s\n", cfg.deviceName);
   return true;
@@ -140,6 +143,8 @@ bool saveConfig()
   doc["mqttUser"] = cfg.mqttUser;
   doc["mqttPassword"] = cfg.mqttPassword;
   doc["deviceName"] = cfg.deviceName;
+  doc["mqttPrefix"] = cfg.mqttPrefix;
+
 
   File f = LittleFS.open("/config.json", "w");
   if (!f)

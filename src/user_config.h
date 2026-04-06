@@ -15,8 +15,8 @@
 #define DEFAULT_MQTT_PORT 1883
 #define DEFAULT_MQTT_USER ""
 #define DEFAULT_MQTT_PASSWORD ""
+#define DEFAULT_MQTT_PREFIX "home/"
 #define DEFAULT_DEVICE_NAME "esp32_servo"
-
 
 // ─── Hardware ─────────────────────────────────────────────────────────────────
 #define SERVO_PIN 2  // Pin D2 mapped to pin GPIO2/ADC12/TOUCH2 of ESP32

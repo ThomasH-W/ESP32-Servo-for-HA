@@ -9,6 +9,9 @@
 # secret files with credentials, keys, etc.
 user_config_secret.h
 
+# Logfiles
+*.log   
+
 # Build and cache
 *.pyc
 __pycache__/
