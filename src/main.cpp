@@ -2,7 +2,7 @@
   File : main.cpp
   Date : 3.4.2026
 
-  ToDo:
+  ToDo: n/a
 
 * ESP32 Servo MQTT Controller
 * - Controls a servo via MQTT
