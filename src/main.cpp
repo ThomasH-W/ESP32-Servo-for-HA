@@ -56,6 +56,7 @@ char topicSet[128];
 char topicSetPct[128];
 char topicState[128];
 char topicStatus[128];
+char topicConfig[128];
 char topicDiscovery[512];
 char topicDiscoveryPct[512];
 
@@ -82,6 +83,7 @@ void buildTopics()
   snprintf(topicSetPct, sizeof(topicSetPct), "%scmnd/%s/set_pct", cfg.mqttPrefix, cfg.deviceName);
   snprintf(topicState, sizeof(topicState), "%sstat/%s/state", cfg.mqttPrefix, cfg.deviceName);
   snprintf(topicStatus, sizeof(topicStatus), "%stele/%s/status", cfg.mqttPrefix, cfg.deviceName);
+  snprintf(topicConfig, sizeof(topicConfig), "%stele/%s/config", cfg.mqttPrefix, cfg.deviceName);
 
   snprintf(topicDiscovery, sizeof(topicDiscovery), "homeassistant/number/%s/config", cfg.mqttPrefix, cfg.deviceName);
   snprintf(topicDiscoveryPct, sizeof(topicDiscoveryPct), "homeassistant/number/%s_pct/config", cfg.mqttPrefix, cfg.deviceName);
@@ -129,7 +131,7 @@ bool loadConfig()
   strlcpy(cfg.deviceName, doc["deviceName"] | DEFAULT_DEVICE_NAME, sizeof(cfg.deviceName));
   strlcpy(cfg.mqttPrefix, doc["mqttPrefix"] | DEFAULT_MQTT_PREFIX, sizeof(cfg.mqttPrefix));
 
-  Serial.printf("[Config] Loaded. Device: %s\n", cfg.deviceName);
+  Serial.printf("[Config] config.json loaded. Device: %s\n", cfg.deviceName);
   return true;
 }
 
@@ -243,6 +245,25 @@ void publishDiscovery()
 
 }
 
+void publishStatus()
+{
+  JsonDocument doc;
+
+  doc["name"] = cfg.deviceName;
+  doc["ip"] = WiFi.localIP().toString();
+  doc["SSId"] = cfg.wifiSSID;
+  doc["BSSId"] = WiFi.BSSIDstr();
+  doc["RSSI"] = WiFi.RSSI();
+  doc["mqttServer"] = cfg.mqttServer;
+
+  char payload[512];
+  serializeJson(doc, payload);
+
+  // Publish retained so HA picks it up after restart
+  Serial.printf("[MQTT] %s → %s; length:%d\n", topicConfig, payload, strlen(payload));
+  bool ok = mqtt.publish(topicConfig, payload, /*retain=*/false);
+  Serial.printf("Publish Config %s: %s\n\n", ok ? "OK" : "FAILED", topicConfig);
+}
 // ═════════════════════════════════════════════════════════════════════════════
 // MQTT
 // ═════════════════════════════════════════════════════════════════════════════
@@ -296,6 +317,7 @@ bool mqttReconnect()
     if (needsDiscovery)
     {
       publishDiscovery();
+      publishStatus();
       needsDiscovery = false;
     }
 
@@ -504,6 +526,7 @@ void setup()
   delay(200);
   Serial.println("\n[Boot] ESP32 Servo MQTT Controller");
 
+
   // LittleFS
   if (!LittleFS.begin(true))
   { // true = format on fail
@@ -520,6 +543,8 @@ void setup()
 
   // Servo
   ESP32PWM::allocateTimer(0);
+  ledcDetach(SERVO_PIN);
+  pinMode(SERVO_PIN, OUTPUT);
   servo.setPeriodHertz(50);
   servo.attach(SERVO_PIN, SERVO_MIN_US, SERVO_MAX_US);
   servo.write(currentAngle);
